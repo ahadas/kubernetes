@@ -4,6 +4,7 @@ go_library(
     name = "go_default_library",
     srcs = [
         "cpu_assignment.go",
+        "etopology_aware_cpu_assignment.go",
         "cpu_manager.go",
         "fake_cpu_manager.go",
         "policy.go",
@@ -31,6 +32,7 @@ go_test(
     name = "go_default_test",
     srcs = [
         "cpu_assignment_test.go",
+        "etopology_aware_cpu_assignment_test.go",
         "cpu_manager_test.go",
         "policy_none_test.go",
         "policy_static_test.go",
