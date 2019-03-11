@@ -17,6 +17,7 @@ limitations under the License.
 package cpumanager
 
 import (
+	"reflect"
 	"testing"
 
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
@@ -32,157 +33,157 @@ func TestAssignment(t *testing.T) {
 		cores         int
 		threads       int
 		expErr        string
-		expResult     cpuset.CPUSet
+		expResult     []int
 	}{
 		{
-			"single socket HT, 1 socket free",
+			"single socket HT, emulated topology 1:2:2, 1 socket free",
 			topoSingleSocketHT,
 			cpuset.NewCPUSet(0, 1, 2, 3, 4, 5, 6, 7),
 			1,
 			2,
 			2,
 			"",
-			cpuset.NewCPUSet(0, 1, 4, 5),
+			[]int{0, 4, 1, 5},
 		},
 		{
-			"single socket HT, 1 socket - 1 cpu",
+			"single socket HT, emulated topology 1:2:2, 1 socket - 1 cpu",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(0, /*1,*/ 2, 3, 4, 5, 6, 7),
+			cpuset.NewCPUSet(0, 2, 3, 4, 5, 6, 7),
 			1,
 			2,
 			2,
 			"",
-			cpuset.NewCPUSet(0, 2, 4, 6),
+			[]int{0, 4, 2, 6},
 		},
 		{
-			"single socket HT, 1 socket - 1 cpu",
+			"single socket HT, emulated topology 1:2:1, 1 socket - 1 cpu",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(0, /*1,*/ 2, 3, 4, 5, 6, 7),
+			cpuset.NewCPUSet(0, 2, 3, 4, 5, 6, 7),
 			1,
 			2,
 			1,
 			"",
-			cpuset.NewCPUSet(0, 2),
+			[]int{0, 2},
 		},
 		{
-			"single socket HT, 1 socket - 1 cpu",
+			"single socket HT, emulated topology 1:2:2, 1 full core, 2 partial cores",
 			topoSingleSocketHT,
-			cpuset.NewCPUSet(/*0, 1,*/ 2, /*3, 4,*/ 5, 6, 7),
+			cpuset.NewCPUSet(2, 5, 6, 7),
 			1,
 			2,
 			2,
 			"",
-			cpuset.NewCPUSet(2, 6, 5, 7),
+			[]int{2, 6, 5, 7},
 		},
 		{
-			"dual TBD",
+			"dual socket HT, emulated topology 1:2:2, full sockets",
 			topoDualSocketHT,
 			cpuset.NewCPUSet(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
 			1,
 			2,
 			2,
 			"",
-			cpuset.NewCPUSet(0, 6, 2, 8),
+			[]int{0, 6, 2, 8},
 		},
 		{
-			"dual TBD2",
+			"dual socket HT, emulated topology 1:2:2, second socket supports more groups",
 			topoDualSocketHT,
-			cpuset.NewCPUSet(/*0, 1,*/ 2, 3, 4, 5,/* 6, 7,*/ 8, 9,/* 10,*/ 11),
+			cpuset.NewCPUSet(2, 3, 4, 5, 8, 9, 11),
 			1,
 			2,
 			2,
 			"",
-			cpuset.NewCPUSet(3, 9, 5, 11),
+			[]int{3, 9, 5, 11},
 		},
 		{
-			"dual TBD3",
+			"dual socket HT, emulated topology 1:2:2, second socket support more groups",
 			topoDualSocketHT,
-			cpuset.NewCPUSet(/*0, 1,*/ 2, 3, 4, 5,/* 6, 7,*/ 8, 9,/* 10,*/ 11),
-			2,
-			1,
-			2,
-			"",
-			cpuset.NewCPUSet(3, 9, 2, 8),
-		},
-		{
-			"dual TBD4",
-			topoDualSocketHT,
-			cpuset.NewCPUSet(0, /*1, 2,*/ 3, 4, 5, 6, /*7, 8,*/ 9, 10, 11),
-			2,
-			2,
-			2,
-			"",
-			cpuset.NewCPUSet(0, 6, 4, 10, 3, 9, 5, 11),
-		},
-		{
-			"dual TBD5",
-			topoDualSocketHT,
-			cpuset.NewCPUSet(0, 1, /*2, 3,*/ 4, 5, 6, /*7, 8,*/ 9, 10, 11),
-			2,
-			2,
-			2,
-			"",
-			cpuset.NewCPUSet(0, 6, 4, 10, 5, 11, 1, 9),
-		},
-		{
-			"dual TBD6",
-			topoDualSocketHT,
-			cpuset.NewCPUSet(0, /*1, 2, */3, 4, 5, /*6, 7,*/ 8, 9, 10, 11),
+			cpuset.NewCPUSet(0, 3, 4, 5, 8, 9, 10, 11),
 			1,
 			2,
 			2,
 			"",
-			cpuset.NewCPUSet(3, 9, 5, 11),
+			[]int{3, 9, 5, 11},
 		},
 		{
-			"dual TBD7",
+			"dual socket HT, 2 emulated sockets, 2nd socket is more free",
 			topoDualSocketHT,
-			cpuset.NewCPUSet(0, 1, /*2,*/ 3, 4, 5, 6, /*7, 8, 9,*/ 10,/* 11*/),
+			cpuset.NewCPUSet(2, 3, 4, 5, 8, 9, 11),
 			2,
 			1,
 			2,
 			"",
-			cpuset.NewCPUSet(0, 6, 4, 10),
+			[]int{3, 9, 2, 8},
 		},
 		{
-			"dual TBD8",
+			"dual socket HT, emulated topology 1:1:2, same groups 2nd socket is more free",
 			topoDualSocketHT,
-			cpuset.NewCPUSet(0, /*1,*/ 2, /*3, 4, 5, 6, 7, */8, /*9, 10,*/ 11),
-			2,
-			1,
-			2,
-			"",
-			cpuset.NewCPUSet(2, 8, 0, 11),
-		},
-		{
-			"dual TBD9",
-			topoDualSocketHT,
-			cpuset.NewCPUSet(/*0, */1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
+			cpuset.NewCPUSet(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
 			1,
 			1,
 			2,
 			"",
-			cpuset.NewCPUSet(1, 7),
+			[]int{1, 7},
 		},
 		{
-			"dual TBD10",
+			"dual socket HT, emulated topology 1:1:2, 2nd socket - more groups, less cpus",
 			topoDualSocketHT,
-			cpuset.NewCPUSet(/*0, */1, 2, /*3,*/ 4, 5, 6, 7, 8, /*9,*/ 10, 11),
+			cpuset.NewCPUSet(0, 4, 5, 8, 11),
 			1,
 			1,
 			2,
 			"",
-			cpuset.NewCPUSet(2, 8),
+			[]int{5, 11},
+		},
+		{
+			"dual socket HT, 2 emulated sockets, exact match",
+			topoDualSocketHT,
+			cpuset.NewCPUSet(0, 3, 4, 5, 6, 9, 10, 11),
+			2,
+			2,
+			2,
+			"",
+			[]int{0, 6, 4, 10, 3, 9, 5, 11},
+		},
+		{
+			"dual socket HT, 2 emulated sockets, not exact match",
+			topoDualSocketHT,
+			cpuset.NewCPUSet(0, 1, 4, 5, 6, 9, 10, 11),
+			2,
+			2,
+			2,
+			"",
+			[]int{0, 6, 4, 10, 5, 11, 1, 9},
+		},
+		{
+			"dual socket HT, 2 emulated sockets, mapped to 1st socket",
+			topoDualSocketHT,
+			cpuset.NewCPUSet(0, 1, 3, 4, 5, 6, 10),
+			2,
+			1,
+			2,
+			"",
+			[]int{0, 6, 4, 10},
+		},
+		{
+			"dual socket HT, emulated topology 2:1:2, emulated socket is split",
+			topoDualSocketHT,
+			cpuset.NewCPUSet(0, 2, 8, 11),
+			2,
+			1,
+			2,
+			"",
+			[]int{2, 8, 0, 11},
 		},
 	}
 
 	for _, tc := range testCases {
-		result, err := takeBy(tc.topo, tc.availableCPUs, tc.sockets, tc.cores, tc.threads)
+		result, err := takeByETopology(tc.topo, tc.availableCPUs, tc.sockets, tc.cores, tc.threads)
 		if tc.expErr != "" && err.Error() != tc.expErr {
 			t.Errorf("expected error to be [%v] but it was [%v] in test \"%s\"", tc.expErr, err, tc.description)
 		}
-		if !result.Equals(tc.expResult) {
-			t.Errorf("expected result [%s] to equal [%s] in test \"%s\"", result, tc.expResult, tc.description)
+		if !reflect.DeepEqual(result, tc.expResult) {
+			t.Errorf("expected result %v to equal %v in test \"%s\"", result, tc.expResult, tc.description)
 		}
 	}
 }

@@ -18,18 +18,50 @@ package cpumanager
 
 import (
 	"fmt"
+	"sort"
 
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
 )
 
-///// Arik ///////
-func (a *cpuAccumulator) maxSocket() int {
-	socketIDs := a.details.Sockets().ToSlice()
+type cpuAccumulator2 struct {
+	acc         *cpuAccumulator
+	esockets    int
+	ecores      int
+	ethreads    int
+	assignments map[int][]int
+}
+
+func newCPUAccumulator2(topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, sockets int, cores int, threads int) *cpuAccumulator2 {
+	accumulator := &cpuAccumulator{
+		topo:          topo,
+		details:       topo.CPUDetails.KeepOnly(availableCPUs),
+		numCPUsNeeded: sockets * cores * threads,
+		result:        cpuset.NewCPUSet(),
+	}
+	return &cpuAccumulator2 {
+		acc:           accumulator,
+		esockets:      sockets,
+		ecores:        cores,
+		ethreads:      threads,
+		assignments:   make(map[int][]int),
+	}
+}
+
+func (a *cpuAccumulator2) isSatisfied() bool {
+	return a.acc.isSatisfied()
+}
+
+func (a *cpuAccumulator2) isFailed() bool {
+	return a.acc.isFailed()
+}
+
+func (a *cpuAccumulator2) maxSocket() int {
+	socketIDs := a.acc.details.Sockets().ToSlice()
 	maxSocketID := socketIDs[0]
-	maxSocketCpus := a.details.CPUsInSocket(maxSocketID).Size()
+	maxSocketCpus := a.acc.details.CPUsInSocket(maxSocketID).Size()
 	for socket := range socketIDs[1:] {
-		socketCpus := a.details.CPUsInSocket(socket).Size()
+		socketCpus := a.acc.details.CPUsInSocket(socket).Size()
 		if maxSocketCpus < socketCpus {
 			maxSocketID = socket
 			maxSocketCpus = socketCpus
@@ -38,18 +70,30 @@ func (a *cpuAccumulator) maxSocket() int {
 	return maxSocketID
 }
 
-func (a *cpuAccumulator) socketToNumOfFreeCpus() map[int]int {
+func (a *cpuAccumulator2) socketToNumOfFreeCpus() map[int]int {
 	mm := make(map[int]int)
-	for _, socketID := range a.details.Sockets().ToSlice() {
-		mm[socketID] = a.details.CPUsInSocket(socketID).Size()
+	for _, socketID := range a.acc.details.Sockets().ToSlice() {
+		mm[socketID] = a.acc.details.CPUsInSocket(socketID).Size()
 	}
 	return mm
 }
 
-type SocketAssignment struct {
-	esocket int
-	socket  int
-	eval	SocketEvaluation
+func (a *cpuAccumulator2) emulatedCpusPerSocket() int {
+	return a.ecores * a.ethreads
+}
+
+func (a *cpuAccumulator2) Add(esocket int, cpus []int) {
+	a.assignments[esocket] = append(a.assignments[esocket], cpus...)
+	a.acc.take(cpuset.NewCPUSet(cpus...))
+}
+
+func (a *cpuAccumulator2) Result() []int {
+	result := []int{}
+	for i := 0; i < a.esockets; i++ {
+		result = append(result, a.assignments[i]...)
+	}
+	//return cpuset.NewCPUSet(result...)
+	return result
 }
 
 type SocketEvaluation struct {
@@ -58,23 +102,20 @@ type SocketEvaluation struct {
 	free   int
 }
 
-func takeBy(topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, sockets int, cores int, threads int) (cpuset.CPUSet, error) {
-	acc := newCPUAccumulator(topo, availableCPUs, sockets * cores * threads)
+func takeByETopology(topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, sockets int, cores int, threads int) ([]int, error) {
+	acc := newCPUAccumulator2(topo, availableCPUs, sockets, cores, threads)
 	if acc.isSatisfied() {
-		return acc.result, nil
+		return acc.Result(), nil
 	}
 	if acc.isFailed() {
-		return cpuset.NewCPUSet(), fmt.Errorf("not enough cpus available to satisfy request")
+		// return cpuset.NewCPUSet(), fmt.Errorf("not enough cpus available to satisfy request")
+		return []int{}, fmt.Errorf("not enough cpus available to satisfy request")
 	}
 
 	esocketToNumOfCpus := make(map[int]int)
-	ecpusPerSocket := cores * threads
 	for i := 0; i < sockets; i++ {
-		esocketToNumOfCpus[i] = ecpusPerSocket
+		esocketToNumOfCpus[i] = acc.emulatedCpusPerSocket()
 	}
-
-	// socketToNumOfCpus := acc.socketToNumOfFreeCpus()
-	var assignments []SocketAssignment
 
 	for true {
 		maxESocket, numOfCpus := maxSocket(esocketToNumOfCpus)
@@ -84,41 +125,28 @@ func takeBy(topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, sockets int
 
 		sockets := findSockets(acc, numOfCpus)
 		maxSocket := sockets[0]
-		maxEval := eval(acc.details, maxSocket, numOfCpus, threads)
+		maxEval := eval(acc.acc.details, maxSocket, numOfCpus, threads)
 		for _, socket := range sockets[1:] {
-			eval := eval(acc.details, socket, numOfCpus, threads)
+			eval := eval(acc.acc.details, socket, numOfCpus, threads)
 			if eval.groups > maxEval.groups ||
 				(eval.groups == maxEval.groups && (eval.free > maxEval.free)) {
 				maxSocket = socket
 				maxEval = eval
 			}
 		}
-
-		assignment := SocketAssignment{
-			esocket:  maxESocket,
-			socket:   maxSocket,
-			eval:     maxEval,
-		}
-		assignments = append(assignments, assignment)
-
-		acc.take(cpuset.NewCPUSet(maxEval.cpus...))
+		esocketToNumOfCpus[maxESocket] -= len(maxEval.cpus)
+		acc.Add(maxESocket, maxEval.cpus)
 		if acc.isSatisfied() {
 			break
 		}
 	}
 
-	debug := make(map[int][]int)
-	for _, assignment := range assignments {
-		debug[assignment.esocket] = append(debug[assignment.esocket], assignment.eval.cpus...)
-	}
-	fmt.Printf("assignment: %v\n", debug)
-
-	return acc.result, nil
+	return acc.Result(), nil
 }
 
-func findSockets(acc *cpuAccumulator, numOfCpus int) []int {
-	var moreOrEqual []int
-	var less []int
+func findSockets(acc *cpuAccumulator2, numOfCpus int) []int {
+	moreOrEqual := []int{}
+	less := []int{}
 	var maxLess int
 	for k, v := range acc.socketToNumOfFreeCpus() {
 		if numOfCpus <= v {
@@ -133,30 +161,35 @@ func findSockets(acc *cpuAccumulator, numOfCpus int) []int {
 		}
 	}
 	if len(moreOrEqual) > 0 {
+		sort.Ints(moreOrEqual)
 		return moreOrEqual
 	} else {
 		// needs sorting to prioritize sockets that we already took cpus from
+		sort.Ints(less)
 		return less
 	}
 }
 
 func maxSocket(esocketToNumOfCpus map[int]int) (int, int) {
-	var maxESocket int
+	maxESocket := -1
 	max := -1
 	for k, v := range esocketToNumOfCpus {
 		if max < v {
 			maxESocket = k
 			max = v
+		} else if max == v && k < maxESocket {
+			maxESocket = k
 		}
+
 	}
 	return maxESocket, max
 }
 
 func eval(details topology.CPUDetails, socket int, needed int, groupSize int) SocketEvaluation {
-	var allCpus []int
+	allCpus := []int{}
 	groups := 0
 	for needed > 0 {
-		coreID := coreWithMaxFreeCpus(&details, socket)
+		coreID := nextCore(&details, socket)
 		if coreID == -1 {
 			break
 		}
@@ -175,15 +208,17 @@ func eval(details topology.CPUDetails, socket int, needed int, groupSize int) So
 	return SocketEvaluation {
 		cpus: allCpus,
 		groups: groups,
-		free: details.CPUsInSocket(socket).Size(),
+		free: details.CPUsInSocket(socket).Size(),// - len(allCpus),
 	}
 }
 
-func coreWithMaxFreeCpus(details *topology.CPUDetails, socket int) int {
-	coreIDs := details.CoresInSocket(socket).ToSlice()
-	if len(coreIDs) == 0 {
+// Next core in the socket to fill
+func nextCore(details *topology.CPUDetails, socket int) int {
+	cores := details.CoresInSocket(socket)
+	if cores.Size() == 0 {
 		return -1
 	}
+        coreIDs := cores.ToSlice()
 	maxCore := coreIDs[0]
 	maxCoreCpus := details.CPUsInCore(maxCore).Size()
 	for _, core := range coreIDs[1:] {
